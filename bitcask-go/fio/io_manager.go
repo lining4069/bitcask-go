@@ -4,7 +4,7 @@ package fio
 
 const DataFilePerm = 0644
 
-// IOManager 抽象出接口，可以扩展不同的io实现，当前为 标准io操作
+// IOManager 抽象出接口，可以扩展不同的磁盘存储操作的实现
 type IOManager interface {
 	// Read  从文件给定位置获取对应的数值
 	Read([]byte, int64) (int, error)

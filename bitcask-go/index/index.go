@@ -8,7 +8,7 @@ import (
 	"github.com/google/btree"
 )
 
-// Indexer 内存通用索引接口
+// Indexer 抽象内存通用索引接口
 // 不同存储数据结构，通过实现Indexer接口实现扩展
 type Indexer interface {
 	// Put 内存索引中添加索引（索引，存储信息）
