@@ -28,3 +28,25 @@ type Item struct {
 func (ai *Item) Less(bi btree.Item) bool {
 	return bytes.Compare(ai.key, bi.(*Item).key) == -1
 }
+
+// 索引引擎
+type IndexerType int8
+
+const (
+	// B树索引
+	Btree IndexerType = iota + 1
+	// 自适应计数树索引
+	ART
+)
+
+// NewIndexer 创建指定实现的内存索引引擎实例
+func NewIndexer(typ IndexerType) Indexer {
+	switch typ {
+	case Btree:
+		return NewBTree()
+	case ART:
+		return nil
+	default:
+		panic("unSupport indexer type")
+	}
+}

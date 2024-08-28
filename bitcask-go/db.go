@@ -3,6 +3,12 @@ package bitcask_go
 import (
 	"bitcask-go/data"
 	"bitcask-go/index"
+	"errors"
+	"io"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -15,11 +21,13 @@ type DB struct {
 	// 当前活跃数据文件 用于写入
 	activateFile *data.DataFile
 	// 旧文件
-	orderFiles map[uint32]*data.DataFile
+	olderFiles map[uint32]*data.DataFile
 	// 配置
 	options *Options
 	// 内存索引引擎
 	index index.Indexer
+
+	fileIds []int
 }
 
 // Put 写入方法 key不能为空
@@ -61,14 +69,14 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	if db.activateFile.FileId == pos.Fid { // 要查询的数据文件为当前活跃文件
 		dataFile = db.activateFile
 	} else {
-		dataFile = db.orderFiles[pos.Fid]
+		dataFile = db.olderFiles[pos.Fid]
 	}
 	//存储文件不存在
 	if dataFile == nil {
 		return nil, ErrDataFileNotFound
 	}
 	// 根据偏移量读取数据构建logRecord
-	logRecord, err := dataFile.ReadLogRecord(pos.Offset)
+	logRecord, _, err := dataFile.ReadLogRecord(pos.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +109,7 @@ func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, e
 			return nil, err
 		}
 		// 将活跃文件转为旧文件
-		db.orderFiles[db.activateFile.FileId] = db.activateFile
+		db.olderFiles[db.activateFile.FileId] = db.activateFile
 		// 打开新的活跃文件
 		if err := db.setActivateDataFile(); err != nil {
 			return nil, err
@@ -138,5 +146,128 @@ func (db *DB) setActivateDataFile() error {
 	}
 	db.activateFile = dataFile
 
+	return nil
+}
+
+// loadDataFiles 根据启动路径加载路径下所有数据文件
+func (db *DB) loadDataFiles() error {
+	dirEntries, err := os.ReadDir(db.options.DirPath)
+	if err != nil {
+		return err
+	}
+	var fileIds []int
+	// 读取文件夹下数据，构建文件id数组
+	for _, entry := range dirEntries {
+		if strings.HasSuffix(entry.Name(), data.DataFileNameSuffix) {
+			splitNames := strings.Split(entry.Name(), ".")
+			fileId, err := strconv.Atoi(splitNames[0])
+			if err != nil {
+				return ErrDataDirectoryCorrupted
+			}
+			fileIds = append(fileIds, fileId)
+		}
+	}
+
+	// 对文件id进行排序，从小到大进行加载
+	sort.Ints(fileIds)
+	// 将排序后的启动时文件id赋值
+	db.fileIds = fileIds
+	// 遍历灭一个id，打开对应的数据文件
+	for i, fid := range fileIds {
+		dataFile, err := data.OpenDataFile(db.options.DirPath, uint32(fid))
+		if err != nil {
+			return err
+		}
+		if i == len(fileIds)-1 {
+			db.activateFile = dataFile
+		} else {
+			db.olderFiles[uint32(fid)] = dataFile
+		}
+	}
+	return nil
+}
+
+// loadIndexFromDataFiles 根据数据文件，构建内存中索引
+func (db *DB) loadIndexFromDataFiles() error {
+	if len(db.fileIds) == 0 { // 当前数据库为空数据库
+		return nil
+	}
+	for i, fid := range db.fileIds {
+		var fileId = uint32(fid)
+		var dataFile *data.DataFile
+		if db.activateFile.FileId == fileId {
+			dataFile = db.activateFile
+		} else {
+			dataFile = db.olderFiles[fileId]
+		}
+
+		// 循序处理当前文件内的内容，构建LogRecord
+		var offset int64 = 0
+		for {
+			logRecord, size, err := dataFile.ReadLogRecord(offset)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return err
+			}
+			//构建内存索引信息
+			if logRecord.Type == data.LogRecordDeleted {
+				db.index.Delete(logRecord.Key)
+			} else {
+				logRecordPos := &data.LogRecordPos{Fid: fileId, Offset: offset}
+				db.index.Put(logRecord.Key, logRecordPos)
+			}
+			// 递增offset以读取后续数据，构建LogRecord和LogRecordPos
+			offset += size
+		}
+		// 处理到最后一个处理的文件 即为当前活跃文件,更新其WriteOff
+		if i == len(db.fileIds)-1 {
+			db.activateFile.WriteOff = offset
+		}
+	}
+	return nil
+}
+
+// 数据库实例操作
+
+// 创建数据库实例
+func Open(options Options) (*DB, error) {
+	// 传入自定义配置项校验
+	if err := checkOptions(options); err != nil {
+		return nil, err
+	}
+	// 传入的数据存储路径合法但不存在
+	if _, err := os.Stat(options.DirPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(options.DirPath, os.ModePerm); err != nil {
+			return nil, err
+		}
+	}
+	// 创建数据库实例
+	db := &DB{
+		mu:         new(sync.RWMutex),
+		options:    &options,
+		olderFiles: make(map[uint32]*data.DataFile),
+		index:      index.NewIndexer(options.IndexType),
+	}
+	// 加载dirPath下的数据文件
+	if err := db.loadDataFiles(); err != nil {
+		return nil, err
+	}
+	// 从数据文件当中加载内存索引
+	if err := db.loadIndexFromDataFiles(); err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
+func checkOptions(options Options) error {
+	if options.DirPath == "" {
+		return errors.New("database dirPath is empty")
+	}
+	if options.DataFileSize <= 0 {
+		return errors.New(" database dataFileSize must greater than 0")
+	}
 	return nil
 }

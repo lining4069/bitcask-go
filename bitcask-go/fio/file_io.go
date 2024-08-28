@@ -22,8 +22,8 @@ func NewFileIOManger(fileName string) (*FileIO, error) {
 
 // 实现IOManager接口
 
-func (fio *FileIO) Read(bytes []byte, i int64) (int, error) {
-	return fio.fd.ReadAt(bytes, i)
+func (fio *FileIO) Read(bytes []byte, offset int64) (int, error) {
+	return fio.fd.ReadAt(bytes, offset)
 }
 
 func (fio *FileIO) Write(bytes []byte) (int, error) {
