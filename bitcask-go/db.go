@@ -87,6 +87,30 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	return logRecord.Value, err
 }
 
+// Delete 数据库删除数据
+func (db *DB) Delete(key []byte) error {
+	// key为空
+	if len(key) == 0 {
+		return ErrorKeyIsEmpty
+	}
+	// key不为空在内存索引中不存在
+	if pos := db.index.Get(key); pos == nil {
+		return nil
+	}
+	// 构建LogRecord 表明数据被删除
+	logRecord := &data.LogRecord{Key: key, Type: data.LogRecordDeleted}
+	_, err := db.appendLogRecord(logRecord)
+	if err != nil {
+		return err
+	}
+	// 将被删除数据的内存索引删除
+	if ok := db.index.Delete(key); !ok {
+		return ErrIndexUpdateFailed
+	}
+
+	return nil
+}
+
 // appendLogRecord 存储操作主函数
 func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, error) {
 	// 并发安全
