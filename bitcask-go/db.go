@@ -225,7 +225,7 @@ func (db *DB) loadIndexFromDataFiles() error {
 			dataFile = db.olderFiles[fileId]
 		}
 
-		// 循序处理当前文件内的内容，构建LogRecord
+		// 循序处理当前文件内的内容，构建LogRecord，进而更新数据库时启动内存索引信息
 		var offset int64 = 0
 		for {
 			logRecord, size, err := dataFile.ReadLogRecord(offset)
