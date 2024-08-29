@@ -255,7 +255,18 @@ func (db *DB) loadIndexFromDataFiles() error {
 
 // 数据库实例操作
 
-// 创建数据库实例
+// checkOptions 校验配置项是否合法
+func checkOptions(options Options) error {
+	if options.DirPath == "" {
+		return errors.New("database dirPath is empty")
+	}
+	if options.DataFileSize <= 0 {
+		return errors.New(" database dataFileSize must greater than 0")
+	}
+	return nil
+}
+
+// Open 打开数据库实例
 func Open(options Options) (*DB, error) {
 	// 传入自定义配置项校验
 	if err := checkOptions(options); err != nil {
@@ -284,14 +295,4 @@ func Open(options Options) (*DB, error) {
 	}
 
 	return db, nil
-}
-
-func checkOptions(options Options) error {
-	if options.DirPath == "" {
-		return errors.New("database dirPath is empty")
-	}
-	if options.DataFileSize <= 0 {
-		return errors.New(" database dataFileSize must greater than 0")
-	}
-	return nil
 }
