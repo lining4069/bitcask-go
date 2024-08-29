@@ -1,6 +1,9 @@
 package bitcask_go
 
-import "bitcask-go/index"
+import (
+	"bitcask-go/index"
+	"os"
+)
 
 //Remark : 配置文件
 
@@ -13,4 +16,11 @@ type Options struct {
 	SyncWrites bool
 	// 数据库索引使用那种实现方式
 	IndexType index.IndexerType
+}
+
+var DefaultOptions = Options{
+	DirPath:      os.TempDir(),
+	DataFileSize: 256 * 1024 * 1024,
+	SyncWrites:   false,
+	IndexType:    index.Btree,
 }
