@@ -26,7 +26,7 @@ type DB struct {
 	options *Options
 	// 内存索引引擎
 	index index.Indexer
-
+	// 数据库加载环境数据内已存在的数据文件id数组，仅用于启动数据库
 	fileIds []int
 }
 
