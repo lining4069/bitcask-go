@@ -2,6 +2,7 @@ package bitcask_go
 
 import (
 	"bitcask-go/utils"
+	"bytes"
 	"github.com/stretchr/testify/assert"
 	"os"
 	"testing"
@@ -212,4 +213,46 @@ func TestDB_Delete(t *testing.T) {
 	val2, err := db2.Get(utils.GetTestKey(22))
 	assert.Nil(t, err)
 	assert.Equal(t, val1, val2)
+}
+
+func TestDB_ListKeys(t *testing.T) {
+	opts := DefaultOptions
+	opts.DirPath = "./tmp/bitCask-go-iterator"
+	db, err := Open(opts)
+	defer destroyDB(db)
+	assert.Nil(t, err)
+	assert.NotNil(t, db)
+	// 增加测试数据
+	err = db.Put([]byte("annde"), utils.RandomValue(10))
+	assert.Nil(t, err)
+
+	keys1 := db.ListKeys()
+	for _, key := range keys1 {
+		t.Log(string(key))
+	}
+
+	err = db.Put([]byte("bnnde"), utils.RandomValue(20))
+	assert.Nil(t, err)
+	err = db.Put([]byte("dnnde"), utils.RandomValue(40))
+	assert.Nil(t, err)
+	err = db.Put([]byte("cnnde"), utils.RandomValue(30))
+	assert.Nil(t, err)
+	err = db.Put([]byte("bnnde-other"), utils.RandomValue(50))
+	assert.Nil(t, err)
+
+	keys2 := db.ListKeys()
+	for _, key2 := range keys2 {
+		t.Log("multi ", string(key2))
+	}
+	// 测试Fold方法
+	err = db.Fold(func(key []byte, value []byte) bool {
+		t.Log(string(key))
+		t.Log(string(value))
+		if bytes.Compare(key, utils.GetTestKey(20)) == 0 {
+			return false
+		}
+		return true
+	})
+
+	assert.Nil(t, err)
 }

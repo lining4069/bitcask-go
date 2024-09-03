@@ -111,6 +111,38 @@ func (db *DB) Delete(key []byte) error {
 	return nil
 }
 
+// Close 关闭数据库
+func (db *DB) Close() error {
+	if db.activateFile == nil {
+		return nil
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if err := db.activateFile.Close(); err != nil {
+		return err
+	}
+
+	for _, file := range db.olderFiles {
+		if err := file.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Sync 持久化数据库 数据文件
+func (db *DB) Sync() error {
+	if db.activateFile == nil {
+		return nil
+	}
+
+	db.mu.Lock()
+	db.mu.Unlock()
+
+	return db.activateFile.Sync()
+}
+
 // appendLogRecord 存储操作主函数
 func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, error) {
 	// 并发安全
@@ -295,4 +327,68 @@ func Open(options Options) (*DB, error) {
 	}
 
 	return db, nil
+}
+
+//KV数据库 用户层面迭代器
+
+// NewIterator 数据库结构体DB 创建索引迭代器方法
+func (db *DB) NewIterator(opts IteratorOptions) *Iterator {
+	indexIter := db.index.Iterator(opts.Reverse)
+	return &Iterator{
+		indexIter: indexIter,
+		db:        db,
+		options:   opts,
+	}
+}
+
+// getValueByPosition 根据内存索引信息获取 value
+func (db *DB) getValueByPosition(logRecordPos *data.LogRecordPos) ([]byte, error) {
+	var dataFile *data.DataFile
+	if db.activateFile.FileId == logRecordPos.Fid {
+		dataFile = db.activateFile
+	} else {
+		dataFile = db.olderFiles[logRecordPos.Fid]
+	}
+	if dataFile == nil {
+		return nil, ErrDataFileNotFound
+	}
+	logRecord, _, err := dataFile.ReadLogRecord(logRecordPos.Offset)
+	if err != nil {
+		return nil, err
+	}
+	if logRecord.Type == data.LogRecordDeleted {
+		return nil, ErrKeyNotFound
+	}
+	return logRecord.Value, nil
+}
+
+// ListKeys 获取数据库中所有的key
+func (db *DB) ListKeys() [][]byte {
+	iterator := db.index.Iterator(false)
+	keys := make([][]byte, db.index.Size())
+	var idx int
+	for iterator.Rewind(); iterator.Valid(); iterator.Next() {
+		keys[idx] = iterator.Key()
+		idx++
+	}
+	return keys
+}
+
+// Fold 获取所有的数据(key-value 键值对)，并执行用户指定的操作，返回false时终止遍历
+func (db *DB) Fold(fn func(key []byte, value []byte) bool) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	iterator := db.index.Iterator(false)
+	for iterator.Rewind(); iterator.Valid(); iterator.Next() {
+		value, err := db.getValueByPosition(iterator.Value())
+		if err != nil {
+			return err
+		}
+		if !fn(iterator.Key(), value) {
+			break
+		}
+	}
+
+	return nil
 }

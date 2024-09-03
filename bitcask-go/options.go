@@ -24,3 +24,16 @@ var DefaultOptions = Options{
 	SyncWrites:   false,
 	IndexType:    index.Btree,
 }
+
+// IteratorOptions 迭代器自定义配置
+type IteratorOptions struct {
+	// 遍历前缀为制定值的key，默认为空
+	Prefix []byte
+	// 是否反向遍历，默认false 正序
+	Reverse bool
+}
+
+var DefaultIteratorOptions = IteratorOptions{
+	Prefix:  nil,
+	Reverse: false,
+}

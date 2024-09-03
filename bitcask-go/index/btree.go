@@ -62,6 +62,9 @@ func (bt *BTree) Iterator(reverse bool) Iterator {
 	defer bt.lock.RUnlock()
 	return newBTreeIterator(bt.tree, reverse)
 }
+func (bt *BTree) Size() int {
+	return bt.tree.Len()
+}
 
 // btreeIterator 实现基于BTree数据结构的索引迭代器
 type btreeIterator struct {
