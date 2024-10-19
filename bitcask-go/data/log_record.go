@@ -10,11 +10,12 @@ import (
 type LogRecordType = byte
 
 const (
-	LogRecordNormal LogRecordType = iota
-	LogRecordDeleted
+	LogRecordNormal      LogRecordType = iota // 正常数据
+	LogRecordDeleted                          // 已删除数据
+	LogRecordTxnFinished                      // 事务提交标志数据
 )
 
-// 数据文件中存储一条记录时，数据头部的长度
+// MaxLogRecordHeaderSize 数据文件中存储一条记录时，数据头部的长度
 // crc，type，key_size,value_size
 // 4+1+ 5*2 = 15
 const MaxLogRecordHeaderSize = binary.MaxVarintLen32*2 + 4 + 1
@@ -37,6 +38,12 @@ type LogRecord struct {
 type LogRecordPos struct {
 	Fid    uint32 // 文件id
 	Offset int64  // 数据在文件中的偏移量
+}
+
+// TransactionRecord 事务处理是暂存数据结构
+type TransactionRecord struct {
+	Record *LogRecord
+	Pos    *LogRecordPos
 }
 
 // EncodeLogRecord 对LogRecord 实例进行编码，用户传入的只有key-value键值对，需要在编码阶段增加header信息

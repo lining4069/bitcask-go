@@ -28,6 +28,8 @@ type DB struct {
 	index index.Indexer
 	// 数据库加载环境数据内已存在的数据文件id数组，仅用于启动数据库
 	fileIds []int
+	// 数据库事务序列号 全局递增
+	seqNo uint64
 }
 
 // Put 写入方法 key不能为空
@@ -37,12 +39,12 @@ func (db *DB) Put(key []byte, value []byte) error {
 	}
 	// 构造KV模型数据存储实例
 	logRecord := data.LogRecord{
-		Key:   key,
+		Key:   logRecordKeyWithSeq(key, nonTransactionSeqNo),
 		Value: value,
 		Type:  data.LogRecordNormal,
 	}
 	// 存储到磁盘中，并返回内存索引信息
-	pos, err := db.appendLogRecord(&logRecord)
+	pos, err := db.appendLogRecordWithLock(&logRecord)
 	if err != nil {
 		return err
 	}
@@ -98,8 +100,11 @@ func (db *DB) Delete(key []byte) error {
 		return nil
 	}
 	// 构建LogRecord 表明数据被删除
-	logRecord := &data.LogRecord{Key: key, Type: data.LogRecordDeleted}
-	_, err := db.appendLogRecord(logRecord)
+	logRecord := &data.LogRecord{
+		Key:  logRecordKeyWithSeq(key, nonTransactionSeqNo),
+		Type: data.LogRecordDeleted,
+	}
+	_, err := db.appendLogRecordWithLock(logRecord)
 	if err != nil {
 		return err
 	}
@@ -143,11 +148,16 @@ func (db *DB) Sync() error {
 	return db.activateFile.Sync()
 }
 
-// appendLogRecord 存储操作主函数
-func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, error) {
+// appendLogRecordWithLock 存储操作主函数复用，解决重复加锁
+func (db *DB) appendLogRecordWithLock(dataRecord *data.LogRecord) (*data.LogRecordPos, error) {
 	// 并发安全
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	return db.appendLogRecord(dataRecord)
+}
+
+// appendLogRecord 存储操作主函数
+func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, error) {
 	// 存储 初始化 首次存储数据时，需要知道初始化，创建活跃文件
 	if db.activateFile == nil {
 		// 设置可用于写入和活跃文件
@@ -205,6 +215,50 @@ func (db *DB) setActivateDataFile() error {
 	return nil
 }
 
+// 数据库实例操作
+
+// Open 打开数据库实例
+func Open(options Options) (*DB, error) {
+	// 传入自定义配置项校验
+	if err := checkOptions(options); err != nil {
+		return nil, err
+	}
+	// 传入的数据存储路径合法但不存在
+	if _, err := os.Stat(options.DirPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(options.DirPath, os.ModePerm); err != nil {
+			return nil, err
+		}
+	}
+	// 创建数据库实例
+	db := &DB{
+		mu:         new(sync.RWMutex),
+		options:    &options,
+		olderFiles: make(map[uint32]*data.DataFile),
+		index:      index.NewIndexer(options.IndexType),
+	}
+	// 加载dirPath下的数据文件
+	if err := db.loadDataFiles(); err != nil {
+		return nil, err
+	}
+	// 从数据文件当中加载内存索引
+	if err := db.loadIndexFromDataFiles(); err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
+// checkOptions 校验配置项是否合法
+func checkOptions(options Options) error {
+	if options.DirPath == "" {
+		return errors.New("database dirPath is empty")
+	}
+	if options.DataFileSize <= 0 {
+		return errors.New(" database dataFileSize must greater than 0")
+	}
+	return nil
+}
+
 // loadDataFiles 根据启动路径加载路径下所有数据文件
 func (db *DB) loadDataFiles() error {
 	dirEntries, err := os.ReadDir(db.options.DirPath)
@@ -248,6 +302,23 @@ func (db *DB) loadIndexFromDataFiles() error {
 	if len(db.fileIds) == 0 { // 当前数据库为空数据库
 		return nil
 	}
+
+	updateIndex := func(key []byte, typ data.LogRecordType, pos *data.LogRecordPos) {
+		//构建内存索引信息
+		var ok bool
+		if typ == data.LogRecordDeleted {
+			ok = db.index.Delete(key)
+		} else {
+			ok = db.index.Put(key, pos)
+		}
+		if !ok {
+			panic("fail update index at database start")
+		}
+	}
+	// 暂存事务数据
+	transactionRecords := make(map[uint64][]*data.TransactionRecord)
+	var currentSeqNo = nonTransactionSeqNo
+
 	for i, fid := range db.fileIds {
 		var fileId = uint32(fid)
 		var dataFile *data.DataFile
@@ -267,12 +338,29 @@ func (db *DB) loadIndexFromDataFiles() error {
 				}
 				return err
 			}
-			//构建内存索引信息
-			if logRecord.Type == data.LogRecordDeleted {
-				db.index.Delete(logRecord.Key)
-			} else {
-				logRecordPos := &data.LogRecordPos{Fid: fileId, Offset: offset}
-				db.index.Put(logRecord.Key, logRecordPos)
+			// 构建索引 Value
+			logRecordPos := &data.LogRecordPos{Fid: fileId, Offset: offset}
+			// 这里读取出的key的带事务序列号的，但是内存索引的key不带序列号
+			realKey, seqNo := parseLogRecordKey(logRecord.Key)
+			if seqNo == nonTransactionSeqNo { // 非事务提交
+				updateIndex(realKey, logRecord.Type, logRecordPos)
+			} else { // WriteBatch提交的数据,事务提交
+				// 接受到事务提交标识的LogRecord，说明事务提交成功，数据有效，则加载数据
+				if logRecord.Type == data.LogRecordTxnFinished {
+					for _, txnRecord := range transactionRecords[seqNo] {
+						updateIndex(realKey, txnRecord.Record.Type, txnRecord.Pos)
+					}
+					delete(transactionRecords, seqNo)
+				} else {
+					transactionRecords[seqNo] = append(transactionRecords[seqNo], &data.TransactionRecord{
+						Record: logRecord,
+						Pos:    logRecordPos,
+					})
+				}
+			}
+			// 更新seqNo 序列号
+			if seqNo > currentSeqNo {
+				currentSeqNo = seqNo
 			}
 			// 递增offset以读取后续数据，构建LogRecord和LogRecordPos
 			offset += size
@@ -282,51 +370,10 @@ func (db *DB) loadIndexFromDataFiles() error {
 			db.activateFile.WriteOff = offset
 		}
 	}
+	// 将数据库加载完成后最新的序列号
+	db.seqNo = currentSeqNo
+
 	return nil
-}
-
-// 数据库实例操作
-
-// checkOptions 校验配置项是否合法
-func checkOptions(options Options) error {
-	if options.DirPath == "" {
-		return errors.New("database dirPath is empty")
-	}
-	if options.DataFileSize <= 0 {
-		return errors.New(" database dataFileSize must greater than 0")
-	}
-	return nil
-}
-
-// Open 打开数据库实例
-func Open(options Options) (*DB, error) {
-	// 传入自定义配置项校验
-	if err := checkOptions(options); err != nil {
-		return nil, err
-	}
-	// 传入的数据存储路径合法但不存在
-	if _, err := os.Stat(options.DirPath); os.IsNotExist(err) {
-		if err := os.MkdirAll(options.DirPath, os.ModePerm); err != nil {
-			return nil, err
-		}
-	}
-	// 创建数据库实例
-	db := &DB{
-		mu:         new(sync.RWMutex),
-		options:    &options,
-		olderFiles: make(map[uint32]*data.DataFile),
-		index:      index.NewIndexer(options.IndexType),
-	}
-	// 加载dirPath下的数据文件
-	if err := db.loadDataFiles(); err != nil {
-		return nil, err
-	}
-	// 从数据文件当中加载内存索引
-	if err := db.loadIndexFromDataFiles(); err != nil {
-		return nil, err
-	}
-
-	return db, nil
 }
 
 //KV数据库 用户层面迭代器
@@ -391,4 +438,16 @@ func (db *DB) Fold(fn func(key []byte, value []byte) bool) error {
 	}
 
 	return nil
+}
+
+// 数据库 批处理事务
+
+// NewWriteBatch  初始化一个WriteBatch
+func (db *DB) NewWriteBatch(opts WriteBatchOptions) *WriteBatch {
+	return &WriteBatch{
+		options:       opts,
+		mu:            new(sync.Mutex),
+		db:            db,
+		pendingWrites: make(map[string]*data.LogRecord),
+	}
 }
