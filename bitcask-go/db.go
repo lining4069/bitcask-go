@@ -19,7 +19,7 @@ type DB struct {
 	// 读写锁
 	mu *sync.RWMutex
 	// 当前活跃数据文件 用于写入
-	activateFile *data.DataFile
+	activeFile *data.DataFile
 	// 旧文件
 	olderFiles map[uint32]*data.DataFile
 	// 配置
@@ -33,7 +33,7 @@ type DB struct {
 // Put 写入方法 key不能为空
 func (db *DB) Put(key []byte, value []byte) error {
 	if len(key) == 0 {
-		return ErrorKeyIsEmpty
+		return ErrKeyIsEmpty
 	}
 	// 构造KV模型数据存储实例
 	logRecord := data.LogRecord{
@@ -57,7 +57,7 @@ func (db *DB) Put(key []byte, value []byte) error {
 // Get 查询数据
 func (db *DB) Get(key []byte) ([]byte, error) {
 	if len(key) == 0 {
-		return nil, ErrorKeyIsEmpty
+		return nil, ErrKeyIsEmpty
 	}
 	// 从内存索引信息中，获取数据的存储信息
 	pos := db.index.Get(key)
@@ -66,8 +66,8 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	}
 	// 内存索引存在
 	var dataFile *data.DataFile
-	if db.activateFile.FileId == pos.Fid { // 要查询的数据文件为当前活跃文件
-		dataFile = db.activateFile
+	if db.activeFile.FileId == pos.Fid { // 要查询的数据文件为当前活跃文件
+		dataFile = db.activeFile
 	} else {
 		dataFile = db.olderFiles[pos.Fid]
 	}
@@ -91,7 +91,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 func (db *DB) Delete(key []byte) error {
 	// key为空
 	if len(key) == 0 {
-		return ErrorKeyIsEmpty
+		return ErrKeyIsEmpty
 	}
 	// key不为空在内存索引中不存在
 	if pos := db.index.Get(key); pos == nil {
@@ -113,13 +113,13 @@ func (db *DB) Delete(key []byte) error {
 
 // Close 关闭数据库
 func (db *DB) Close() error {
-	if db.activateFile == nil {
+	if db.activeFile == nil {
 		return nil
 	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	if err := db.activateFile.Close(); err != nil {
+	if err := db.activeFile.Close(); err != nil {
 		return err
 	}
 
@@ -133,14 +133,14 @@ func (db *DB) Close() error {
 
 // Sync 持久化数据库 数据文件
 func (db *DB) Sync() error {
-	if db.activateFile == nil {
+	if db.activeFile == nil {
 		return nil
 	}
 
 	db.mu.Lock()
 	db.mu.Unlock()
 
-	return db.activateFile.Sync()
+	return db.activeFile.Sync()
 }
 
 // appendLogRecord 存储操作主函数
@@ -149,7 +149,7 @@ func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, e
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	// 存储 初始化 首次存储数据时，需要知道初始化，创建活跃文件
-	if db.activateFile == nil {
+	if db.activeFile == nil {
 		// 设置可用于写入和活跃文件
 		if err := db.setActivateDataFile(); err != nil {
 			return nil, err
@@ -159,13 +159,13 @@ func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, e
 	encRecord, size := data.EncodeLogRecord(dataRecord)
 	// 当前编码后数据长度大于剩余可存储容量
 	// 处理：1、持久化当前活跃文件，2、打开新的活跃文件
-	if db.activateFile.WriteOff+size > db.options.DataFileSize {
+	if db.activeFile.WriteOff+size > db.options.DataFileSize {
 		// 持久化当前活跃文件
-		if err := db.activateFile.Sync(); err != nil {
+		if err := db.activeFile.Sync(); err != nil {
 			return nil, err
 		}
 		// 将活跃文件转为旧文件
-		db.olderFiles[db.activateFile.FileId] = db.activateFile
+		db.olderFiles[db.activeFile.FileId] = db.activeFile
 		// 打开新的活跃文件
 		if err := db.setActivateDataFile(); err != nil {
 			return nil, err
@@ -173,18 +173,18 @@ func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, e
 	}
 	// 获取到可用的获取文件
 	// 写入数据
-	writeOff := db.activateFile.WriteOff
-	if err := db.activateFile.Write(encRecord); err != nil {
+	writeOff := db.activeFile.WriteOff
+	if err := db.activeFile.Write(encRecord); err != nil {
 		return nil, err
 	}
 	// 用户自定义 是否写入数据时持久化
 	if db.options.SyncWrites {
-		if err := db.activateFile.Sync(); err != nil {
+		if err := db.activeFile.Sync(); err != nil {
 			return nil, err
 		}
 	}
 	// 构建内存索引实例
-	pos := &data.LogRecordPos{Fid: db.activateFile.FileId, Offset: writeOff}
+	pos := &data.LogRecordPos{Fid: db.activeFile.FileId, Offset: writeOff}
 	return pos, nil
 
 }
@@ -192,15 +192,15 @@ func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, e
 // setActivateDataFile 设置新的活跃文件
 func (db *DB) setActivateDataFile() error {
 	var initialFiledId uint32 = 0
-	if db.activateFile != nil {
-		initialFiledId = db.activateFile.FileId + 1
+	if db.activeFile != nil {
+		initialFiledId = db.activeFile.FileId + 1
 	}
 	// 打开新的文件
 	dataFile, err := data.OpenDataFile(db.options.DirPath, initialFiledId)
 	if err != nil {
 		return err
 	}
-	db.activateFile = dataFile
+	db.activeFile = dataFile
 
 	return nil
 }
@@ -235,7 +235,7 @@ func (db *DB) loadDataFiles() error {
 			return err
 		}
 		if i == len(fileIds)-1 {
-			db.activateFile = dataFile
+			db.activeFile = dataFile
 		} else {
 			db.olderFiles[uint32(fid)] = dataFile
 		}
@@ -251,8 +251,8 @@ func (db *DB) loadIndexFromDataFiles() error {
 	for i, fid := range db.fileIds {
 		var fileId = uint32(fid)
 		var dataFile *data.DataFile
-		if db.activateFile.FileId == fileId {
-			dataFile = db.activateFile
+		if db.activeFile.FileId == fileId {
+			dataFile = db.activeFile
 		} else {
 			dataFile = db.olderFiles[fileId]
 		}
@@ -279,7 +279,7 @@ func (db *DB) loadIndexFromDataFiles() error {
 		}
 		// 处理到最后一个处理的文件 即为当前活跃文件,更新其WriteOff
 		if i == len(db.fileIds)-1 {
-			db.activateFile.WriteOff = offset
+			db.activeFile.WriteOff = offset
 		}
 	}
 	return nil
@@ -344,8 +344,8 @@ func (db *DB) NewIterator(opts IteratorOptions) *Iterator {
 // getValueByPosition 根据内存索引信息获取 value
 func (db *DB) getValueByPosition(logRecordPos *data.LogRecordPos) ([]byte, error) {
 	var dataFile *data.DataFile
-	if db.activateFile.FileId == logRecordPos.Fid {
-		dataFile = db.activateFile
+	if db.activeFile.FileId == logRecordPos.Fid {
+		dataFile = db.activeFile
 	} else {
 		dataFile = db.olderFiles[logRecordPos.Fid]
 	}

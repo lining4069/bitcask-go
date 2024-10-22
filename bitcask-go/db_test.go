@@ -11,8 +11,8 @@ import (
 // 测试完成之后销毁 DB 数据目录
 func destroyDB(db *DB) {
 	if db != nil {
-		if db.activateFile != nil {
-			_ = db.activateFile.Close()
+		if db.activeFile != nil {
+			_ = db.activeFile.Close()
 		}
 		err := os.RemoveAll(db.options.DirPath)
 		if err != nil {
@@ -57,7 +57,7 @@ func TestDB_Put(t *testing.T) {
 
 	// 3.key 为空
 	err = db.Put(nil, utils.RandomValue(24))
-	assert.Equal(t, ErrorKeyIsEmpty, err)
+	assert.Equal(t, ErrKeyIsEmpty, err)
 
 	// 4.value 为空
 	err = db.Put(utils.GetTestKey(22), nil)
@@ -75,7 +75,7 @@ func TestDB_Put(t *testing.T) {
 
 	// 6.重启后再 Put 数据
 	// db.Close() // todo 实现 Close 方法后这里用 Close() 替代
-	err = db.activateFile.Close()
+	err = db.activeFile.Close()
 	assert.Nil(t, err)
 
 	// 重启数据库
@@ -142,7 +142,7 @@ func TestDB_Get(t *testing.T) {
 
 	// 6.重启后，前面写入的数据都能拿到
 	//db.Close() // todo 实现 Close 方法后这里用 Close() 替代
-	err = db.activateFile.Close()
+	err = db.activeFile.Close()
 	assert.Nil(t, err)
 
 	// 重启数据库
@@ -186,7 +186,7 @@ func TestDB_Delete(t *testing.T) {
 
 	// 3.删除一个空的 key
 	err = db.Delete(nil)
-	assert.Equal(t, ErrorKeyIsEmpty, err)
+	assert.Equal(t, ErrKeyIsEmpty, err)
 
 	// 4.值被删除之后重新 Put
 	err = db.Put(utils.GetTestKey(22), utils.RandomValue(128))
@@ -202,7 +202,7 @@ func TestDB_Delete(t *testing.T) {
 
 	// 5.重启之后，再进行校验
 	//db.Close() // todo 实现 Close 方法后这里用 Close() 替代
-	err = db.activateFile.Close()
+	err = db.activeFile.Close()
 	assert.Nil(t, err)
 
 	// 重启数据库

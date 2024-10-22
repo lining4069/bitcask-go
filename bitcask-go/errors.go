@@ -4,7 +4,7 @@ package bitcask_go
 import "errors"
 
 var (
-	ErrorKeyIsEmpty           = errors.New("key is not null")
+	ErrKeyIsEmpty             = errors.New("key is not null")
 	ErrIndexUpdateFailed      = errors.New("update index failed")
 	ErrKeyNotFound            = errors.New("the key in not in database")
 	ErrDataFileNotFound       = errors.New("file not found")
