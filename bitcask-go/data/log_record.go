@@ -12,9 +12,10 @@ type LogRecordType = byte
 const (
 	LogRecordNormal LogRecordType = iota
 	LogRecordDeleted
+	LogRecordTxnFinished
 )
 
-// 数据文件中存储一条记录时，数据头部的长度
+// MaxLogRecordHeaderSize 数据文件中存储一条记录时，数据头部的长度
 // crc，type，key_size,value_size
 // 4+1+ 5*2 = 15
 const MaxLogRecordHeaderSize = binary.MaxVarintLen32*2 + 4 + 1
@@ -26,7 +27,7 @@ type LogRecordHeader struct {
 	valueSize  uint32        //LogRecord value 长度
 }
 
-// kv存储操作的数据单位
+// LogRecord kv存储操作的数据单位
 type LogRecord struct {
 	Key   []byte
 	Value []byte
@@ -40,8 +41,11 @@ type LogRecordPos struct {
 }
 
 // EncodeLogRecord 对LogRecord 实例进行编码，用户传入的只有key-value键值对，需要在编码阶段增加header信息
-// crc type   key_size      value_size    key   value
-// 4    1   varint max(5)   varint max(5)  varint  varint
+//
+//	+-------------+-------------+-------------+--------------+-------------+--------------+
+//	| crc 校验值  |  type 类型   |    key size |   value size |      key    |      value   |
+//	+-------------+-------------+-------------+--------------+-------------+--------------+
+//	    4字节          1字节        变长（最大5）   变长（最大5）     变长           变长
 func EncodeLogRecord(lr *LogRecord) ([]byte, int64) {
 	header := make([]byte, MaxLogRecordHeaderSize)
 	// LogRecord 类型
@@ -105,4 +109,12 @@ func getLogRecordCRC(lr *LogRecord, header []byte) uint32 {
 	crc = crc32.Update(crc, crc32.IEEETable, lr.Value)
 
 	return crc
+}
+
+// WriteBatch
+
+// TransactionRecord 暂存的事务相关的数据
+type TransactionRecord struct {
+	Record *LogRecord
+	Pos    *LogRecordPos
 }

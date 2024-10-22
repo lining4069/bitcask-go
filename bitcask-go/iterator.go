@@ -13,6 +13,16 @@ type Iterator struct {
 	options   IteratorOptions
 }
 
+// NewIterator 数据库结构体DB 创建索引迭代器方法
+func (db *DB) NewIterator(opts IteratorOptions) *Iterator {
+	indexIter := db.index.Iterator(opts.Reverse)
+	return &Iterator{
+		indexIter: indexIter,
+		db:        db,
+		options:   opts,
+	}
+}
+
 func (it *Iterator) Rewind() {
 	it.indexIter.Rewind()
 	it.skipToNext()

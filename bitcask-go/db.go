@@ -28,6 +28,8 @@ type DB struct {
 	index index.Indexer
 	// 数据库加载环境数据内已存在的数据文件id数组，仅用于启动数据库
 	fileIds []int
+	// 事务序列号 全局递增
+	seqNo uint64
 }
 
 // Put 写入方法 key不能为空
@@ -37,12 +39,12 @@ func (db *DB) Put(key []byte, value []byte) error {
 	}
 	// 构造KV模型数据存储实例
 	logRecord := data.LogRecord{
-		Key:   key,
+		Key:   logRecordKeyWithSeq(key, nonTransactionSeqNo),
 		Value: value,
 		Type:  data.LogRecordNormal,
 	}
 	// 存储到磁盘中，并返回内存索引信息
-	pos, err := db.appendLogRecord(&logRecord)
+	pos, err := db.appendLogRecordWithLock(&logRecord)
 	if err != nil {
 		return err
 	}
@@ -98,8 +100,11 @@ func (db *DB) Delete(key []byte) error {
 		return nil
 	}
 	// 构建LogRecord 表明数据被删除
-	logRecord := &data.LogRecord{Key: key, Type: data.LogRecordDeleted}
-	_, err := db.appendLogRecord(logRecord)
+	logRecord := &data.LogRecord{
+		Key:  logRecordKeyWithSeq(key, nonTransactionSeqNo),
+		Type: data.LogRecordDeleted,
+	}
+	_, err := db.appendLogRecordWithLock(logRecord)
 	if err != nil {
 		return err
 	}
@@ -143,11 +148,16 @@ func (db *DB) Sync() error {
 	return db.activeFile.Sync()
 }
 
-// appendLogRecord 存储操作主函数
-func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, error) {
+// appendLogRecordWithLock 抽象出使其成为不需要加锁的操作，方便复用。
+func (db *DB) appendLogRecordWithLock(dataRecord *data.LogRecord) (*data.LogRecordPos, error) {
 	// 并发安全
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	return db.appendLogRecord(dataRecord)
+}
+
+// appendLogRecord 存储操作主函数
+func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, error) {
 	// 存储 初始化 首次存储数据时，需要知道初始化，创建活跃文件
 	if db.activeFile == nil {
 		// 设置可用于写入和活跃文件
@@ -248,6 +258,23 @@ func (db *DB) loadIndexFromDataFiles() error {
 	if len(db.fileIds) == 0 { // 当前数据库为空数据库
 		return nil
 	}
+
+	updateIndex := func(key []byte, typ data.LogRecordType, pos *data.LogRecordPos) {
+		var ok bool
+		if typ == data.LogRecordDeleted {
+			ok = db.index.Delete(key)
+		} else {
+			ok = db.index.Put(key, pos)
+		}
+		if !ok {
+			panic("failed to update index at startup")
+		}
+	}
+
+	// 暂存事务数据
+	transactionRecords := make(map[uint64][]*data.TransactionRecord)
+	var currentSeqNo = nonTransactionSeqNo
+
 	for i, fid := range db.fileIds {
 		var fileId = uint32(fid)
 		var dataFile *data.DataFile
@@ -267,14 +294,37 @@ func (db *DB) loadIndexFromDataFiles() error {
 				}
 				return err
 			}
-			//构建内存索引信息
-			if logRecord.Type == data.LogRecordDeleted {
-				db.index.Delete(logRecord.Key)
+
+			// 构造内存索引并保存
+			logRecordPos := &data.LogRecordPos{Fid: fileId, Offset: offset}
+
+			// 解析 key，拿到事务序列号
+			realKey, seqNo := parseLogRecordKey(logRecord.Key)
+			if seqNo == nonTransactionSeqNo {
+				// 非事务操作，直接更新内存索引
+				updateIndex(realKey, logRecord.Type, logRecordPos)
 			} else {
-				logRecordPos := &data.LogRecordPos{Fid: fileId, Offset: offset}
-				db.index.Put(logRecord.Key, logRecordPos)
+				// 事务完成，对应的 seq no 的数据可以更新到内存索引中
+				if logRecord.Type == data.LogRecordTxnFinished {
+					for _, txnRecord := range transactionRecords[seqNo] {
+						updateIndex(txnRecord.Record.Key, txnRecord.Record.Type, txnRecord.Pos)
+					}
+					delete(transactionRecords, seqNo)
+				} else {
+					logRecord.Key = realKey
+					transactionRecords[seqNo] = append(transactionRecords[seqNo], &data.TransactionRecord{
+						Record: logRecord,
+						Pos:    logRecordPos,
+					})
+				}
 			}
-			// 递增offset以读取后续数据，构建LogRecord和LogRecordPos
+
+			// 更新事务序列号
+			if seqNo > currentSeqNo {
+				currentSeqNo = seqNo
+			}
+
+			// 递增 offset，下一次从新的位置开始读取
 			offset += size
 		}
 		// 处理到最后一个处理的文件 即为当前活跃文件,更新其WriteOff
@@ -330,16 +380,6 @@ func Open(options Options) (*DB, error) {
 }
 
 //KV数据库 用户层面迭代器
-
-// NewIterator 数据库结构体DB 创建索引迭代器方法
-func (db *DB) NewIterator(opts IteratorOptions) *Iterator {
-	indexIter := db.index.Iterator(opts.Reverse)
-	return &Iterator{
-		indexIter: indexIter,
-		db:        db,
-		options:   opts,
-	}
-}
 
 // getValueByPosition 根据内存索引信息获取 value
 func (db *DB) getValueByPosition(logRecordPos *data.LogRecordPos) ([]byte, error) {
