@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,13 +24,65 @@ type DB struct {
 	// 旧文件
 	olderFiles map[uint32]*data.DataFile
 	// 配置
-	options *Options
+	options Options
 	// 内存索引引擎
 	index index.Indexer
 	// 数据库加载环境数据内已存在的数据文件id数组，仅用于启动数据库
 	fileIds []int
 	// 事务序列号 全局递增
 	seqNo uint64
+	// 是否正在merge
+	isMerging bool
+}
+
+// checkOptions 校验配置项是否合法
+func checkOptions(options Options) error {
+	if options.DirPath == "" {
+		return errors.New("database dirPath is empty")
+	}
+	if options.DataFileSize <= 0 {
+		return errors.New(" database dataFileSize must greater than 0")
+	}
+	return nil
+}
+
+// Open 打开数据库实例
+func Open(options Options) (*DB, error) {
+	// 传入自定义配置项校验
+	if err := checkOptions(options); err != nil {
+		return nil, err
+	}
+	// 传入的数据存储路径合法但不存在
+	if _, err := os.Stat(options.DirPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(options.DirPath, os.ModePerm); err != nil {
+			return nil, err
+		}
+	}
+	// 创建数据库实例
+	db := &DB{
+		mu:         new(sync.RWMutex),
+		options:    options,
+		olderFiles: make(map[uint32]*data.DataFile),
+		index:      index.NewIndexer(options.IndexType),
+	}
+	// 加载 merge 数据目录（即将merge操作产生的新的数据文件移动到当前数据实例的数据目录下）
+	if err := db.loadMergeFiles(); err != nil {
+		return nil, err
+	}
+	// 加载dirPath下的数据文件
+	if err := db.loadDataFiles(); err != nil {
+		return nil, err
+	}
+	// 从hint文件中加载索引
+	if err := db.loadIndexFromHintFile(); err != nil {
+		return nil, err
+	}
+	// 从数据文件当中加载内存索引
+	if err := db.loadIndexFromDataFiles(); err != nil {
+		return nil, err
+	}
+
+	return db, nil
 }
 
 // Put 写入方法 key不能为空
@@ -161,7 +214,7 @@ func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, e
 	// 存储 初始化 首次存储数据时，需要知道初始化，创建活跃文件
 	if db.activeFile == nil {
 		// 设置可用于写入和活跃文件
-		if err := db.setActivateDataFile(); err != nil {
+		if err := db.setActiveDataFile(); err != nil {
 			return nil, err
 		}
 	}
@@ -177,7 +230,7 @@ func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, e
 		// 将活跃文件转为旧文件
 		db.olderFiles[db.activeFile.FileId] = db.activeFile
 		// 打开新的活跃文件
-		if err := db.setActivateDataFile(); err != nil {
+		if err := db.setActiveDataFile(); err != nil {
 			return nil, err
 		}
 	}
@@ -199,8 +252,8 @@ func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, e
 
 }
 
-// setActivateDataFile 设置新的活跃文件
-func (db *DB) setActivateDataFile() error {
+// setActiveDataFile 设置新的活跃文件
+func (db *DB) setActiveDataFile() error {
 	var initialFiledId uint32 = 0
 	if db.activeFile != nil {
 		initialFiledId = db.activeFile.FileId + 1
@@ -259,6 +312,18 @@ func (db *DB) loadIndexFromDataFiles() error {
 		return nil
 	}
 
+	// 查看是否发生过 merge
+	hasMerge, nonMergeFileId := false, uint32(0) // 是否merge过，没有被merge的最小的Fid
+	mergeFinFileName := filepath.Join(db.options.DirPath, data.MergeFinishedFileName)
+	if _, err := os.Stat(mergeFinFileName); err == nil {
+		fid, err := db.getNonMergeFileId(db.options.DirPath)
+		if err != nil {
+			return err
+		}
+		hasMerge = true
+		nonMergeFileId = fid
+	}
+
 	updateIndex := func(key []byte, typ data.LogRecordType, pos *data.LogRecordPos) {
 		var ok bool
 		if typ == data.LogRecordDeleted {
@@ -277,6 +342,10 @@ func (db *DB) loadIndexFromDataFiles() error {
 
 	for i, fid := range db.fileIds {
 		var fileId = uint32(fid)
+		// 如果比最近未参与 merge 的文件 id 更小，则说明已经从 Hint 文件中加载索引了
+		if hasMerge && fileId < nonMergeFileId {
+			continue
+		}
 		var dataFile *data.DataFile
 		if db.activeFile.FileId == fileId {
 			dataFile = db.activeFile
@@ -333,50 +402,6 @@ func (db *DB) loadIndexFromDataFiles() error {
 		}
 	}
 	return nil
-}
-
-// 数据库实例操作
-
-// checkOptions 校验配置项是否合法
-func checkOptions(options Options) error {
-	if options.DirPath == "" {
-		return errors.New("database dirPath is empty")
-	}
-	if options.DataFileSize <= 0 {
-		return errors.New(" database dataFileSize must greater than 0")
-	}
-	return nil
-}
-
-// Open 打开数据库实例
-func Open(options Options) (*DB, error) {
-	// 传入自定义配置项校验
-	if err := checkOptions(options); err != nil {
-		return nil, err
-	}
-	// 传入的数据存储路径合法但不存在
-	if _, err := os.Stat(options.DirPath); os.IsNotExist(err) {
-		if err := os.MkdirAll(options.DirPath, os.ModePerm); err != nil {
-			return nil, err
-		}
-	}
-	// 创建数据库实例
-	db := &DB{
-		mu:         new(sync.RWMutex),
-		options:    &options,
-		olderFiles: make(map[uint32]*data.DataFile),
-		index:      index.NewIndexer(options.IndexType),
-	}
-	// 加载dirPath下的数据文件
-	if err := db.loadDataFiles(); err != nil {
-		return nil, err
-	}
-	// 从数据文件当中加载内存索引
-	if err := db.loadIndexFromDataFiles(); err != nil {
-		return nil, err
-	}
-
-	return db, nil
 }
 
 //KV数据库 用户层面迭代器
