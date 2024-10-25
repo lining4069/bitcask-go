@@ -73,7 +73,7 @@ func NewIndexer(typ IndexerType) Indexer {
 	case Btree:
 		return NewBTree()
 	case ART:
-		return nil
+		return NewART()
 	default:
 		panic("unSupport indexer type")
 	}
