@@ -2,7 +2,6 @@ package bitcask_go
 
 import (
 	"bitcask-go/utils"
-	"bytes"
 	"github.com/stretchr/testify/assert"
 	"os"
 	"testing"
@@ -12,7 +11,7 @@ import (
 func destroyDB(db *DB) {
 	if db != nil {
 		if db.activeFile != nil {
-			_ = db.activeFile.Close()
+			_ = db.Close()
 		}
 		err := os.RemoveAll(db.options.DirPath)
 		if err != nil {
@@ -75,7 +74,7 @@ func TestDB_Put(t *testing.T) {
 
 	// 6.重启后再 Put 数据
 	// db.Close() // todo 实现 Close 方法后这里用 Close() 替代
-	err = db.activeFile.Close()
+	err = db.Close()
 	assert.Nil(t, err)
 
 	// 重启数据库
@@ -83,12 +82,21 @@ func TestDB_Put(t *testing.T) {
 	assert.Nil(t, err)
 	assert.NotNil(t, db2)
 	val4 := utils.RandomValue(128)
-	err = db2.Put(utils.GetTestKey(5665), val4)
+	err = db2.Put(utils.GetTestKey(55), val4)
 	assert.Nil(t, err)
-	val5, err := db2.Get(utils.GetTestKey(5665))
+	val5, err := db2.Get(utils.GetTestKey(55))
 	assert.Nil(t, err)
 	assert.Equal(t, val4, val5)
 
+	if db != nil {
+		if db.activeFile != nil {
+			_ = db.Close() // todo 实现了 Close 方法之后，这里使用 Close 方法替代
+		}
+		err := os.RemoveAll(db.options.DirPath)
+		if err != nil {
+			panic(err)
+		}
+	}
 }
 
 func TestDB_Get(t *testing.T) {
@@ -142,7 +150,7 @@ func TestDB_Get(t *testing.T) {
 
 	// 6.重启后，前面写入的数据都能拿到
 	//db.Close() // todo 实现 Close 方法后这里用 Close() 替代
-	err = db.activeFile.Close()
+	err = db.Close()
 	assert.Nil(t, err)
 
 	// 重启数据库
@@ -202,7 +210,7 @@ func TestDB_Delete(t *testing.T) {
 
 	// 5.重启之后，再进行校验
 	//db.Close() // todo 实现 Close 方法后这里用 Close() 替代
-	err = db.activeFile.Close()
+	err = db.Close()
 	assert.Nil(t, err)
 
 	// 重启数据库
@@ -217,42 +225,89 @@ func TestDB_Delete(t *testing.T) {
 
 func TestDB_ListKeys(t *testing.T) {
 	opts := DefaultOptions
-	opts.DirPath = "./tmp/bitCask-go-iterator"
+	dir, _ := os.MkdirTemp("", "bitcask-go-list-keys")
+	opts.DirPath = dir
 	db, err := Open(opts)
 	defer destroyDB(db)
 	assert.Nil(t, err)
 	assert.NotNil(t, db)
-	// 增加测试数据
-	err = db.Put([]byte("annde"), utils.RandomValue(10))
-	assert.Nil(t, err)
 
+	// 数据库为空
 	keys1 := db.ListKeys()
-	for _, key := range keys1 {
-		t.Log(string(key))
-	}
+	assert.Equal(t, 0, len(keys1))
 
-	err = db.Put([]byte("bnnde"), utils.RandomValue(20))
+	// 只有一条数据
+	err = db.Put(utils.GetTestKey(11), utils.RandomValue(20))
 	assert.Nil(t, err)
-	err = db.Put([]byte("dnnde"), utils.RandomValue(40))
-	assert.Nil(t, err)
-	err = db.Put([]byte("cnnde"), utils.RandomValue(30))
-	assert.Nil(t, err)
-	err = db.Put([]byte("bnnde-other"), utils.RandomValue(50))
-	assert.Nil(t, err)
-
 	keys2 := db.ListKeys()
-	for _, key2 := range keys2 {
-		t.Log("multi ", string(key2))
+	assert.Equal(t, 1, len(keys2))
+
+	// 有多条数据
+	err = db.Put(utils.GetTestKey(22), utils.RandomValue(20))
+	assert.Nil(t, err)
+	err = db.Put(utils.GetTestKey(33), utils.RandomValue(20))
+	assert.Nil(t, err)
+	err = db.Put(utils.GetTestKey(44), utils.RandomValue(20))
+	assert.Nil(t, err)
+
+	keys3 := db.ListKeys()
+	assert.Equal(t, 4, len(keys3))
+	for _, k := range keys3 {
+		assert.NotNil(t, k)
 	}
-	// 测试Fold方法
+}
+
+func TestDB_Fold(t *testing.T) {
+	opts := DefaultOptions
+	dir, _ := os.MkdirTemp("", "bitcask-go-fold")
+	opts.DirPath = dir
+	db, err := Open(opts)
+	defer destroyDB(db)
+	assert.Nil(t, err)
+	assert.NotNil(t, db)
+
+	err = db.Put(utils.GetTestKey(11), utils.RandomValue(20))
+	assert.Nil(t, err)
+	err = db.Put(utils.GetTestKey(22), utils.RandomValue(20))
+	assert.Nil(t, err)
+	err = db.Put(utils.GetTestKey(33), utils.RandomValue(20))
+	assert.Nil(t, err)
+	err = db.Put(utils.GetTestKey(44), utils.RandomValue(20))
+	assert.Nil(t, err)
+
 	err = db.Fold(func(key []byte, value []byte) bool {
-		t.Log(string(key))
-		t.Log(string(value))
-		if bytes.Compare(key, utils.GetTestKey(20)) == 0 {
-			return false
-		}
+		assert.NotNil(t, key)
+		assert.NotNil(t, value)
 		return true
 	})
+	assert.Nil(t, err)
+}
 
+func TestDB_Close(t *testing.T) {
+	opts := DefaultOptions
+	dir, _ := os.MkdirTemp("", "bitcask-go-close")
+	opts.DirPath = dir
+	db, err := Open(opts)
+	defer destroyDB(db)
+	assert.Nil(t, err)
+	assert.NotNil(t, db)
+
+	err = db.Put(utils.GetTestKey(11), utils.RandomValue(20))
+	assert.Nil(t, err)
+}
+
+func TestDB_Sync(t *testing.T) {
+	opts := DefaultOptions
+	dir, _ := os.MkdirTemp("", "bitcask-go-sync")
+	opts.DirPath = dir
+	db, err := Open(opts)
+	defer destroyDB(db)
+	assert.Nil(t, err)
+	assert.NotNil(t, db)
+
+	err = db.Put(utils.GetTestKey(11), utils.RandomValue(20))
+	assert.Nil(t, err)
+
+	err = db.Sync()
 	assert.Nil(t, err)
 }

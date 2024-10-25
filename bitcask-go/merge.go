@@ -177,8 +177,13 @@ func (db *DB) loadMergeFiles() error {
 	var mergeFinished bool
 	var mergeFileNames []string
 	for _, entry := range dirEntries {
+		// 存在merge正常结束标识文件
 		if entry.Name() == data.MergeFinishedFileName {
 			mergeFinished = true
+		}
+		// merge操作产生的临时数据库实例产生的seqNo文件无用
+		if entry.Name() == data.SeqNoFileName {
+			continue
 		}
 		mergeFileNames = append(mergeFileNames, entry.Name())
 	}

@@ -1,8 +1,18 @@
 package bitcask_go
 
 import (
-	"bitcask-go/index"
 	"os"
+)
+
+type IndexType = int8
+
+const (
+	BTree IndexType = iota + 1 // Btree索引
+
+	ART // Adaptive Radix Tree索引
+
+	// BPlusTree B+ 树索引，将索引存储到磁盘上
+	BPlusTree
 )
 
 //Remark : 配置文件
@@ -15,14 +25,14 @@ type Options struct {
 	// 用户决定是否在写入数据是是否持久化
 	SyncWrites bool
 	// 数据库索引使用那种实现方式
-	IndexType index.IndexerType
+	IndexType IndexType
 }
 
 var DefaultOptions = Options{
 	DirPath:      os.TempDir(),
 	DataFileSize: 256 * 1024 * 1024,
 	SyncWrites:   false,
-	IndexType:    index.Btree,
+	IndexType:    BTree, // ART  BPlusTree
 }
 
 // IteratorOptions 迭代器自定义配置

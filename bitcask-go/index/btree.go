@@ -66,6 +66,10 @@ func (bt *BTree) Size() int {
 	return bt.tree.Len()
 }
 
+func (bt *BTree) Close() error {
+	return nil
+}
+
 // btreeIterator 实现基于BTree数据结构的索引迭代器
 type btreeIterator struct {
 	//当前遍历的下标位置

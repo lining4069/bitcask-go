@@ -21,6 +21,8 @@ type Indexer interface {
 	Iterator(reverse bool) Iterator
 	// Size 获取索引引擎中元素数量
 	Size() int
+	// Close 关闭索引引擎 BTree Art 不需要操作，因为Open时读取数据加载到内存，B+时需要关闭 blotdb
+	Close() error
 }
 
 // Iterator 通用索引迭代器
@@ -58,22 +60,27 @@ func (ai *Item) Less(bi btree.Item) bool {
 }
 
 // 索引引擎
-type IndexerType int8
+type IndexType = int8
 
 const (
-	// B树索引
-	Btree IndexerType = iota + 1
-	// 自适应计数树索引
-	ART
+	Btree IndexType = iota + 1 // Btree索引
+
+	ART // Adaptive Radix Tree索引
+
+	// BPTree B+ 树索引
+	BPTree
 )
 
 // NewIndexer 创建指定实现的内存索引引擎实例
-func NewIndexer(typ IndexerType) Indexer {
+func NewIndexer(typ IndexType, dirPath string, sync bool) Indexer {
 	switch typ {
 	case Btree:
 		return NewBTree()
 	case ART:
 		return NewART()
+	case BPTree:
+		return NewBPlusTree(dirPath, sync)
+
 	default:
 		panic("unSupport indexer type")
 	}

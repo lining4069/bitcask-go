@@ -22,6 +22,10 @@ type WriteBatch struct {
 
 // NewWriteBatch 初始化 WriteBatch
 func (db *DB) NewWriteBatch(opts WriteBatchOptions) *WriteBatch {
+	// 当使用B+树索引引擎时，若不存在持久化的SeqNoFileName（seq-no）文件，且不是数据库初始化，则禁用WriteBatch功能
+	if db.options.IndexType == BPlusTree && !db.seqNoFileExists && !db.isInitial {
+		panic("cannot use  write batch without seqNoFile exists")
+	}
 	return &WriteBatch{
 		options:       opts,
 		mu:            new(sync.Mutex),
