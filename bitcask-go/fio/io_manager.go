@@ -4,6 +4,13 @@ package fio
 
 const DataFilePerm = 0644
 
+type FileIOType = byte
+
+const (
+	StandardFIO FileIOType = iota
+	MemoryMap
+)
+
 // IOManager 抽象出接口，可以扩展不同的磁盘存储操作的实现
 type IOManager interface {
 	// Read  从文件给定位置获取对应的数值
@@ -18,6 +25,14 @@ type IOManager interface {
 	Size() (int64, error)
 }
 
-func NewIOManager(fileName string) (IOManager, error) {
-	return NewFileIOManger(fileName)
+// NewIOManager 初始化 IOManager，目前只支持标准 FileIO,以及启动加速用到的mmap
+func NewIOManager(fileName string, ioType FileIOType) (IOManager, error) {
+	switch ioType {
+	case StandardFIO:
+		return NewFileIOManger(fileName)
+	case MemoryMap:
+		return NewMMapIOManager(fileName)
+	default:
+		panic("unsupported io type")
+	}
 }

@@ -28,6 +28,8 @@ type Options struct {
 	IndexType IndexType
 	// 累计写到多少字节后进行持久化
 	BytesPerSync uint
+	// 数据库启动时是否使用mmap加速
+	MMapStartup bool
 }
 
 var DefaultOptions = Options{
@@ -35,6 +37,8 @@ var DefaultOptions = Options{
 	DataFileSize: 256 * 1024 * 1024,
 	SyncWrites:   false,
 	IndexType:    BTree, // ART  BPlusTree
+	BytesPerSync: 0,
+	MMapStartup:  true,
 }
 
 // IteratorOptions 迭代器自定义配置

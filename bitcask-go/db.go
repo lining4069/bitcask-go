@@ -2,6 +2,7 @@ package bitcask_go
 
 import (
 	"bitcask-go/data"
+	"bitcask-go/fio"
 	"bitcask-go/index"
 	"errors"
 	"fmt"
@@ -96,6 +97,13 @@ func Open(options Options) (*DB, error) {
 		// 遍历文件中所有记录，并更新到内存索引中
 		if err := db.loadIndexFromDataFiles(); err != nil {
 			return nil, err
+		}
+
+		//重置 IO 类型为标准文件IO
+		if db.options.MMapStartup {
+			if err := db.resetIoType(); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// 取出当前事务序列号
@@ -327,7 +335,7 @@ func (db *DB) setActiveDataFile() error {
 		initialFiledId = db.activeFile.FileId + 1
 	}
 	// 打开新的文件
-	dataFile, err := data.OpenDataFile(db.options.DirPath, initialFiledId)
+	dataFile, err := data.OpenDataFile(db.options.DirPath, initialFiledId, fio.StandardFIO)
 	if err != nil {
 		return err
 	}
@@ -361,7 +369,12 @@ func (db *DB) loadDataFiles() error {
 	db.fileIds = fileIds
 	// 遍历灭一个id，打开对应的数据文件
 	for i, fid := range fileIds {
-		dataFile, err := data.OpenDataFile(db.options.DirPath, uint32(fid))
+		ioType := fio.StandardFIO
+		// 配置项 指明数据库启动时使用mmap加载为merge数据
+		if db.options.MMapStartup {
+			ioType = fio.MemoryMap
+		}
+		dataFile, err := data.OpenDataFile(db.options.DirPath, uint32(fid), ioType)
 		if err != nil {
 			return err
 		}
@@ -564,4 +577,21 @@ func (db *DB) loadSeqNo() error {
 	db.seqNoFileExists = true
 
 	return os.Remove(fileName)
+}
+
+// 将数据文件的 IO 类型设置为标准文件 IO
+func (db *DB) resetIoType() error {
+	if db.activeFile == nil {
+		return nil
+	}
+
+	if err := db.activeFile.SetIOManager(db.options.DirPath, fio.StandardFIO); err != nil {
+		return err
+	}
+	for _, dataFile := range db.olderFiles {
+		if err := dataFile.SetIOManager(db.options.DirPath, fio.StandardFIO); err != nil {
+			return err
+		}
+	}
+	return nil
 }
