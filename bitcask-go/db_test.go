@@ -311,3 +311,18 @@ func TestDB_Sync(t *testing.T) {
 	err = db.Sync()
 	assert.Nil(t, err)
 }
+
+func TestDB_FileLock(t *testing.T) {
+	opts := DefaultOptions
+	dir, _ := os.MkdirTemp("", "bitcask-go-filelock")
+	opts.DirPath = dir
+	db, err := Open(opts)
+	defer destroyDB(db)
+	assert.Nil(t, err)
+	assert.NotNil(t, db)
+
+	db2, err2 := Open(opts)
+	t.Log(db2)
+	t.Log(err2)
+
+}

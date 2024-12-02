@@ -4,6 +4,8 @@ import (
 	"bitcask-go/data"
 	"bitcask-go/index"
 	"errors"
+	"fmt"
+	"github.com/gofrs/flock"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,7 +17,10 @@ import (
 
 // Remark: KV存储模型
 
-const seqNoKey = "seq.no" // 使用B+树索引引擎时，数据库关闭记录最新seqNo的数据记录的LogRecord中的Key值
+const (
+	seqNoKey     = "seq.no" // 使用B+树索引引擎时，数据库关闭记录最新seqNo的数据记录的LogRecord中的Key值
+	fileLockName = "flock"
+)
 
 // DB 核心KV存储模型 包含两个核心方法 PUT和GET方法
 type DB struct {
@@ -29,6 +34,7 @@ type DB struct {
 	isMerging       bool                      // 是否正在merge
 	seqNoFileExists bool                      // 存储事务序列号的文件是否存在
 	isInitial       bool                      // 是否是第一次初始化此数据目录
+	fileLock        *flock.Flock              //数据库启动时对数据目录的文件锁
 }
 
 // Open 打开数据库实例
@@ -45,6 +51,15 @@ func Open(options Options) (*DB, error) {
 			return nil, err
 		}
 	}
+	// 判断数据目录是否正在被使用，确保数据库实例在同一时刻只会被一个进程使用。
+	fileLock := flock.New(filepath.Join(options.DirPath, fileLockName))
+	hold, err := fileLock.TryLock()
+	if err != nil {
+		return nil, err
+	}
+	if !hold {
+		return nil, ErrDatabaseIsUsing
+	}
 	//数据库实例目录存在但时为空，也是初始化
 	entries, err := os.ReadDir(options.DirPath)
 	if err != nil {
@@ -60,6 +75,7 @@ func Open(options Options) (*DB, error) {
 		olderFiles: make(map[uint32]*data.DataFile),
 		index:      index.NewIndexer(options.IndexType, options.DirPath, options.SyncWrites),
 		isInitial:  isInitial,
+		fileLock:   fileLock,
 	}
 	// 加载 merge 数据目录（即将merge操作产生的新的数据文件移动到当前数据实例的数据目录下）
 	if err := db.loadMergeFiles(); err != nil {
@@ -183,6 +199,11 @@ func (db *DB) Delete(key []byte) error {
 
 // Close 关闭数据库
 func (db *DB) Close() error {
+	defer func() {
+		if err := db.fileLock.Unlock(); err != nil {
+			panic(fmt.Sprintf("failed to unlock the directory, %v", err))
+		}
+	}()
 	if db.activeFile == nil {
 		return nil
 	}
