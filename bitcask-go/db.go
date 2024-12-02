@@ -35,6 +35,7 @@ type DB struct {
 	seqNoFileExists bool                      // 存储事务序列号的文件是否存在
 	isInitial       bool                      // 是否是第一次初始化此数据目录
 	fileLock        *flock.Flock              //数据库启动时对数据目录的文件锁
+	bytesWrite      uint
 }
 
 // Open 打开数据库实例
@@ -294,10 +295,23 @@ func (db *DB) appendLogRecord(dataRecord *data.LogRecord) (*data.LogRecordPos, e
 	if err := db.activeFile.Write(encRecord); err != nil {
 		return nil, err
 	}
+
+	// 数据库写入数据时，由用户自定义的SyncWrites以及是否进行持久化
+	// 当写入数据的字节量大于options.BytesPerSync时将数据主动持久化
+	db.bytesWrite += uint(size)
 	// 用户自定义 是否写入数据时持久化
-	if db.options.SyncWrites {
+	var needSync = db.options.SyncWrites
+	if !needSync && db.options.BytesPerSync > 0 && db.bytesWrite >= db.options.BytesPerSync {
+		needSync = true
+	}
+	// 数据持久化
+	if needSync {
 		if err := db.activeFile.Sync(); err != nil {
 			return nil, err
+		}
+		// 重置当前写入数据计数器
+		if db.bytesWrite > 0 {
+			db.bytesWrite = 0
 		}
 	}
 	// 构建内存索引实例

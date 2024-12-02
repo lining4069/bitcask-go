@@ -26,6 +26,8 @@ type Options struct {
 	SyncWrites bool
 	// 数据库索引使用那种实现方式
 	IndexType IndexType
+	// 累计写到多少字节后进行持久化
+	BytesPerSync uint
 }
 
 var DefaultOptions = Options{
