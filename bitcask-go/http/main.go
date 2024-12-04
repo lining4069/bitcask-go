@@ -1,25 +1,43 @@
 package main
 
 import (
-	bitcask "bitcask-go"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+
+	bitcask "bitcask-go"
 )
 
 var db *bitcask.DB
+var tempDir string
 
 func init() {
 	// 初始化 DB 实例
 	var err error
 	options := bitcask.DefaultOptions
-	dir, _ := os.MkdirTemp("", "bitcask-go-http")
-	options.DirPath = dir
+	tempDir, _ = os.MkdirTemp("", "bitcask-go-http")
+	options.DirPath = tempDir
+	log.Println(tempDir)
 	db, err = bitcask.Open(options)
 	if err != nil {
 		panic(fmt.Sprintf("failed to open db: %v", err))
+	}
+}
+
+func cleanup() {
+	if db != nil {
+		if err := db.Close(); err != nil {
+			log.Printf("failed to close db: %v", err)
+		}
+	}
+	if tempDir != "" {
+		if err := os.RemoveAll(tempDir); err != nil {
+			log.Printf("failed to remove temp dir: %v", err)
+		}
 	}
 }
 
@@ -75,7 +93,7 @@ func handleDelete(writer http.ResponseWriter, request *http.Request) {
 	err := db.Delete([]byte(key))
 	if err != nil && err != bitcask.ErrKeyIsEmpty {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
-		log.Printf("failed to get kv in db: %v\n", err)
+		log.Printf("failed to delete kv in db: %v\n", err)
 		return
 	}
 
@@ -106,6 +124,19 @@ func main() {
 	http.HandleFunc("/bitcask/listkeys", handleListKeys)
 	// http.HandleFunc("/bitcask/stat", handleStat)
 
+	// 设置信号处理
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		cleanup()
+		os.Exit(0)
+	}()
+
 	// 启动 HTTP 服务
-	_ = http.ListenAndServe("localhost:8080", nil)
+	log.Println("Starting HTTP server on :8080")
+	if err := http.ListenAndServe("localhost:8080", nil); err != nil {
+		log.Fatalf("failed to start HTTP server: %v", err)
+	}
 }
